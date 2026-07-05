@@ -3,7 +3,7 @@
 	url = https://github.com/wowdev/WoWDBDefs/
 [submodule "archives/casc"]
 	path = archives/casc
-	url = https://github.com/wowdev/pyCASCLib
+	url = https://github.com/KonTy/pyCASCLib.git
 [submodule "archives/mpq/native/StormLib"]
 	path = archives/mpq/native/StormLib
 	url = https://github.com/ladislav-zezula/StormLib

@@ -6,22 +6,34 @@ import hashlib
 
 from typing import Union, List, Dict, Tuple
 
+from ...utils.pathing import resolve_case_insensitive_path
 from .. import WoWVersionManager, WoWVersions
 from .mpq import MPQFile
-from .casc.CASC import CASCHandler, FileOpenFlags, LocaleFlags
+try:
+    from .casc.CASC import CASCHandler, FileOpenFlags, LocaleFlags
+except Exception:
+    CASCHandler = None
+    FileOpenFlags = None
+    LocaleFlags = None
 from ..wdbx.wdbc import DBCFile
 from ..blp import BLP2PNG
 
 
 class WoWFileData:
-    def __init__(self, wow_path, project_path):
+    def __init__(self, wow_path, project_path, allow_partial_mpq_fallback=False):
         self.wow_path = wow_path
-        self.files = self.init_mpq_storage(self.wow_path, project_path) \
+        self.allow_partial_mpq_fallback = bool(allow_partial_mpq_fallback)
+        self.files = self.init_mpq_storage(self.wow_path, project_path, self.allow_partial_mpq_fallback) \
             if WoWVersionManager().client_version < WoWVersions.WOD else self.init_casc_storage(self.wow_path,
                                                                                                 project_path)
+        if self.files is None:
+            self.files = []
 
         self.db_files_client = DBFilesClient(self)
-        self.db_files_client.init_tables()
+        try:
+            self.db_files_client.init_tables()
+        except Exception as exc:
+            print(f"\nWarning: failed to initialize DBFilesClient tables: {exc}")
 
         with open(os.path.join(os.path.dirname(__file__), 'listfile.csv'), newline='') as f:
             self.listfile = {int(row[0]): row[1] for row in csv.reader(f, delimiter=';')}
@@ -50,7 +62,8 @@ class WoWFileData:
                     continue
 
                 abs_path = os.path.join(storage, identifier)
-                file = os.path.exists(abs_path) and os.path.isfile(abs_path)
+                resolved = resolve_case_insensitive_path(abs_path)
+                file = bool(resolved and os.path.isfile(resolved))
 
             if file:
                 return storage, storage_type
@@ -69,12 +82,14 @@ class WoWFileData:
             if local_dir:
                 local_path = os.path.join(local_dir, os.path.basename(identifier))
 
-                if os.path.isfile(local_path):
-                    return open(local_path, 'rb').read(), local_path
+                resolved = resolve_case_insensitive_path(local_path)
+                if resolved and os.path.isfile(resolved):
+                    return open(resolved, 'rb').read(), resolved
 
                 local_path = os.path.join(local_dir, identifier)
-                if os.path.isfile(local_path):
-                    return open(local_path, 'rb').read(), local_path
+                resolved = resolve_case_insensitive_path(local_path)
+                if resolved and os.path.isfile(resolved):
+                    return open(resolved, 'rb').read(), resolved
 
             storage, is_archive = self.has_file(identifier)
 
@@ -85,7 +100,9 @@ class WoWFileData:
 
                 else:
                     filepath = os.path.join(storage, identifier)
-                    return open(filepath, "rb").read(), filepath
+                    resolved = resolve_case_insensitive_path(filepath)
+                    if resolved:
+                        return open(resolved, "rb").read(), resolved
 
         else:
 
@@ -96,13 +113,15 @@ class WoWFileData:
                 if filepath:
                     local_path = os.path.join(local_dir, os.path.basename(filepath))
 
-                    if os.path.isfile(local_path):
-                        return open(local_path, 'rb').read(), local_path
+                    resolved = resolve_case_insensitive_path(local_path)
+                    if resolved and os.path.isfile(resolved):
+                        return open(resolved, 'rb').read(), resolved
 
                     local_path = os.path.join(local_dir, filepath)
 
-                    if os.path.isfile(local_path):
-                        return open(local_path, 'rb').read(), local_path
+                    resolved = resolve_case_insensitive_path(local_path)
+                    if resolved and os.path.isfile(resolved):
+                        return open(resolved, 'rb').read(), resolved
 
             storage, is_archive = self.has_file(identifier)
 
@@ -119,7 +138,9 @@ class WoWFileData:
 
                 else:
                     filepath = os.path.join(storage, identifier)
-                    return open(filepath, "rb").read(), filepath
+                    resolved = resolve_case_insensitive_path(filepath)
+                    if resolved:
+                        return open(resolved, "rb").read(), resolved
 
         error_msg = "Requested file \"{}\" was not found in WoW filesystem.".format(identifier)
 
@@ -331,6 +352,10 @@ class WoWFileData:
     @staticmethod
     def init_casc_storage(wow_path, project_path=None):
 
+        if CASCHandler is None or LocaleFlags is None:
+            print("\nCASC backend is unavailable. Falling back to empty game data.")
+            return [(project_path.lower().strip(os.sep), False)] if project_path else []
+
         if not WoWFileData.is_wow_path_valid(wow_path):
             print("\nPath to World of Warcraft is empty or invalid. Failed to load game data.")
             return None
@@ -347,7 +372,7 @@ class WoWFileData:
         return [(casc, True), (project_path.lower().strip(os.sep), False)] if project_path else [(casc, True)]
 
     @staticmethod
-    def init_mpq_storage(wow_path, project_path=None) -> List[Tuple[Union[MPQFile, str], bool]]:
+    def init_mpq_storage(wow_path, project_path=None, allow_partial_mpq_fallback=False) -> List[Tuple[Union[MPQFile, str], bool]]:
         """Open game resources and store links to them in memory"""
 
         print("\nProcessing available game resources of client: " + wow_path)
@@ -355,7 +380,7 @@ class WoWFileData:
 
         if not WoWFileData.is_wow_path_valid(wow_path):
             print("\nPath to World of Warcraft is empty or invalid. Failed to load game data.")
-            return None
+            return []
 
         data_packages = WoWFileData.list_game_data_paths(os.path.join(wow_path, "Data"))
 
@@ -370,11 +395,27 @@ class WoWFileData:
 
         for package, package_path in data_packages:
             if os.path.isfile(package_path):
-                resource_map.append((MPQFile(package_path, 0x00000100), True))
-                print("\nLoaded MPQ: " + os.path.basename(package))
+                try:
+                    resource_map.append((MPQFile(package_path, 0x00000100), True))
+                    print("\nLoaded MPQ: " + os.path.basename(package))
+                except Exception as exc:
+                    if not allow_partial_mpq_fallback:
+                        raise RuntimeError(
+                            "Failed to initialize MPQ archive '{}' due to unavailable/incompatible Storm binding. "
+                            "Enable partial asset loading in WBS project settings to continue with folder-only data. "
+                            "Original error: {}".format(os.path.basename(package), exc)
+                        )
+
+                    print("\nSkipping MPQ due to unavailable/incompatible Storm binding: "
+                          f"{os.path.basename(package)} ({exc})")
             else:
                 resource_map.append((package_path, False))
                 print("\nLoaded folder patch: {}".format(os.path.basename(package)))
+
+        if not resource_map and project_path and os.path.isdir(project_path):
+            fallback = project_path.lower().strip(os.sep)
+            resource_map.append((fallback, False))
+            print("\nNo archive backends available, using project directory only: {}".format(project_path))
 
         print("\nDone initializing data packages.")
         print("Total loading time: ", time.strftime("%M minutes %S seconds", time.gmtime(time.time() - start_time)))

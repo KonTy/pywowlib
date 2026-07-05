@@ -3,7 +3,18 @@ Python wrapper around Storm C API bindings
 """
 import os
 import sys
-from .native import storm
+try:
+    from .native import storm
+except Exception as exc:
+    storm = None
+    _storm_import_error = exc
+else:
+    _storm_import_error = None
+
+
+def _require_storm():
+    if storm is None:
+        raise ImportError(f"Storm MPQ native binding is unavailable: {_storm_import_error}")
 
 
 class MPQFile(object):
@@ -14,6 +25,7 @@ class MPQFile(object):
     LISTFILE = "(listfile)"
 
     def __init__(self, name=None, flags=0):
+        _require_storm()
         self.paths = []
         self._archives = []
         self._archive_names = {}
