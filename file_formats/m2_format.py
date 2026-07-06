@@ -146,6 +146,35 @@ class M2TrackBase:
         if self.m2_version < M2Versions.WOTLK:
             self.interpolation_ranges.write(f)
 
+        # WOTLK+ tracks are arrays-of-arrays. Older exporter paths may leave
+        # a flat list of timestamps; normalize to a single inner sequence.
+        if self.m2_version >= M2Versions.WOTLK and len(self.timestamps.values):
+            def _is_m2array_like(item):
+                return hasattr(item, 'values') and hasattr(item, 'write')
+
+            if any(not _is_m2array_like(item) for item in self.timestamps.values):
+                old_items = list(self.timestamps.values)
+                normalized = []
+                pending_scalars = []
+
+                for item in old_items:
+                    if _is_m2array_like(item):
+                        if pending_scalars:
+                            inner = M2Array(uint32)
+                            inner.values = pending_scalars
+                            normalized.append(inner)
+                            pending_scalars = []
+                        normalized.append(item)
+                    else:
+                        pending_scalars.append(int(item))
+
+                if pending_scalars:
+                    inner = M2Array(uint32)
+                    inner.values = pending_scalars
+                    normalized.append(inner)
+
+                self.timestamps.values = normalized
+
         self.timestamps.write(f)
 
         return self
@@ -183,6 +212,35 @@ class M2Track(M2TrackBase, metaclass=Template):
         return self
 
     def write(self, f):
+        # WOTLK+ tracks are arrays-of-arrays. Older exporter paths may leave
+        # a flat list of values; normalize to a single inner sequence.
+        if self.m2_version >= M2Versions.WOTLK and self.creator is not M2Event and len(self.values.values):
+            def _is_m2array_like(item):
+                return hasattr(item, 'values') and hasattr(item, 'write')
+
+            if any(not _is_m2array_like(item) for item in self.values.values):
+                old_items = list(self.values.values)
+                normalized = []
+                pending_scalars = []
+
+                for item in old_items:
+                    if _is_m2array_like(item):
+                        if pending_scalars:
+                            inner = self.values.type()
+                            inner.values = pending_scalars
+                            normalized.append(inner)
+                            pending_scalars = []
+                        normalized.append(item)
+                    else:
+                        pending_scalars.append(item)
+
+                if pending_scalars:
+                    inner = self.values.type()
+                    inner.values = pending_scalars
+                    normalized.append(inner)
+
+                self.values.values = normalized
+
         super(M2Track, self).write(f)
         if self.creator is not M2Event:
             self.values.write(f)
